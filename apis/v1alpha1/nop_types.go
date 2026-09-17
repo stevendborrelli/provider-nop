@@ -68,6 +68,27 @@ type NopParameters struct {
 	// schema, is not validated, and is not used by the NopResource controller.
 	// +optional
 	Fields runtime.RawExtension `json:"fields,omitempty"`
+
+	// DeleteAfter is how long this NopResource takes to delete. Until this
+	// long after its deletion timestamp it reports that it still exists, so
+	// it stays Deleting rather than disappearing at once. Real external
+	// resources rarely delete instantly, and a test that needs to observe the
+	// order things are torn down needs teardown to take measurable time.
+	//
+	// Omit to delete immediately, which is the default and the historical
+	// behavior.
+	// +optional
+	DeleteAfter *metav1.Duration `json:"deleteAfter,omitempty"`
+
+	// DeleteError makes deletion of this NopResource fail with this message,
+	// every time, so it is never deleted and never goes away. Use it to
+	// exercise what depends on a resource that cannot be deleted - a provider
+	// that can't reach its API, or an external resource something else still
+	// holds.
+	//
+	// The resource can be freed by clearing this field.
+	// +optional
+	DeleteError *string `json:"deleteError,omitempty"`
 }
 
 // NopObservation are the observable fields of a NopResource.

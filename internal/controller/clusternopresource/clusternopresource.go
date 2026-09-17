@@ -84,6 +84,7 @@ type connector struct{}
 func (c *connector) Connect(_ context.Context, _ resource.Managed) (managed.ExternalClient, error) {
 	return managed.ExternalClientFns{
 		ObserveFn: Observe,
+		DeleteFn:  Delete,
 		DisconnectFn: func(_ context.Context) error {
 			return nil
 		},
@@ -93,19 +94,32 @@ func (c *connector) Connect(_ context.Context, _ resource.Managed) (managed.Exte
 // Observe doesn't actually observe an external resource. Instead, it sets the
 // most recent conditions that should occur per spec.forProvider.conditionAfter.
 func Observe(_ context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
-	// If our managed resource has been deleted we need to report that
-	// our pretend external resource is gone in order for the delete
-	// process to complete. This means we'll never call the DeleteFn.
-	if meta.WasDeleted(mg) {
-		return managed.ExternalObservation{ResourceExists: false}, nil
-	}
-
 	nop, ok := mg.(*v1alpha1.ClusterNopResource)
 	if !ok {
 		return managed.ExternalObservation{}, errors.Errorf("managed resource was not a %T", &v1alpha1.ClusterNopResource{})
+	}
+
+	// Our pretend external resource takes spec.forProvider.deleteAfter to go
+	// away, and never goes away at all if spec.forProvider.deleteError is set.
+	// With neither it's gone at once, so the delete completes on the next
+	// reconcile and DeleteFn is never called.
+	if meta.WasDeleted(mg) {
+		return nopprovider.ObserveDeleted(nop.Spec.ForProvider, time.Since(nop.DeletionTimestamp.Time), conditions.ObservedGenerationPropagationManager{}.For(nop)), nil
 	}
 	status := conditions.ObservedGenerationPropagationManager{}.For(nop)
 	age := time.Since(nop.CreationTimestamp.Time)
 
 	return nopprovider.Observe(nop.Spec.ForProvider, age, status)
+}
+
+// Delete doesn't actually delete an external resource. It fails if
+// spec.forProvider.deleteError is set, which is how a ClusterNopResource pretends to
+// be a resource that cannot be deleted.
+func Delete(_ context.Context, mg resource.Managed) (managed.ExternalDelete, error) {
+	nop, ok := mg.(*v1alpha1.ClusterNopResource)
+	if !ok {
+		return managed.ExternalDelete{}, errors.Errorf("managed resource was not a %T", &v1alpha1.ClusterNopResource{})
+	}
+
+	return managed.ExternalDelete{}, nopprovider.Delete(nop.Spec.ForProvider)
 }

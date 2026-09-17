@@ -25,6 +25,7 @@ import (
 
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 
 	"github.com/crossplane-contrib/provider-nop/apis/v1alpha1"
@@ -78,4 +79,46 @@ func Observe(nop v1alpha1.NopParameters, age time.Duration, status conditions.Co
 	// pretend external resource exists and is up-to-date. This means
 	// we'll never call the CreateFn or UpdateFn.
 	return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true, ConnectionDetails: cd}, nil
+}
+
+// ObserveDeleted reports whether a deleted NopResource's pretend external
+// resource still exists, and so how far its deletion has progressed.
+//
+// A real external resource takes time to delete, and sometimes refuses to.
+// Reporting it gone the moment the resource is deleted - which is what this
+// provider did before spec.forProvider.deleteAfter existed - makes deletion
+// instantaneous and unobservable, and leaves no way to test what happens to
+// something that depends on a resource that will not go away.
+func ObserveDeleted(nop v1alpha1.NopParameters, deleted time.Duration, status conditions.ConditionSet) managed.ExternalObservation {
+	// Deletion fails, so the external resource is still there. Delete returns
+	// the error; we just have to keep reporting it exists, or the reconciler
+	// would finalize without ever calling Delete.
+	if nop.DeleteError != nil {
+		status.MarkConditions(v1alpha1.DeletionFailed(*nop.DeleteError))
+		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}
+	}
+
+	// No delay configured: gone at once, as it always was.
+	if nop.DeleteAfter == nil {
+		return managed.ExternalObservation{ResourceExists: false}
+	}
+
+	if remaining := nop.DeleteAfter.Duration - deleted; remaining > 0 {
+		// The reconciler will overwrite Ready on its way past, so the
+		// countdown goes on a condition of our own.
+		status.MarkConditions(v1alpha1.Deleting(remaining, nop.DeleteAfter.Duration))
+		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}
+	}
+
+	return managed.ExternalObservation{ResourceExists: false}
+}
+
+// Delete fails if spec.forProvider.deleteError is set, and is otherwise a
+// no-op: the deletion itself is paced by ObserveDeleted.
+func Delete(nop v1alpha1.NopParameters) error {
+	if nop.DeleteError != nil {
+		return errors.New(*nop.DeleteError)
+	}
+
+	return nil
 }
